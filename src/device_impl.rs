@@ -4,6 +4,7 @@ use crate::{
     Status,
 };
 use embedded_hal::blocking::i2c;
+use embedded_hal_async::digital::Wait;
 
 struct Register;
 impl Register {
@@ -169,10 +170,14 @@ fn raw_to_lux(result: (u8, u16)) -> f32 {
 impl<I2C, E, IC> Opt300x<I2C, IC, mode::OneShot>
 where
     I2C: i2c::WriteRead<Error = E> + i2c::Write<Error = E>,
+    E: core::fmt::Debug,
 {
     /// Read the result of the most recent light to digital conversion in lux
-    pub fn read_lux(&mut self) -> nb::Result<Measurement<f32>, Error<E>> {
-        let measurement = self.read_raw()?;
+    pub async fn read_lux<P>(&mut self, wait_pin: &mut P) -> Result<Measurement<f32>, Error<E>>
+    where
+        P: Wait,
+    {
+        let measurement = self.read_raw(wait_pin).await?;
         Ok(Measurement {
             result: raw_to_lux(measurement.result),
             status: measurement.status,
@@ -181,27 +186,31 @@ where
 
     /// Read the result of the most recent light to digital conversion in
     /// raw format: (exponent, mantissa)
-    pub fn read_raw(&mut self) -> nb::Result<Measurement<(u8, u16)>, Error<E>> {
-        if self.was_conversion_started {
-            let status = self.read_status().map_err(nb::Error::Other)?;
-            if status.conversion_ready {
-                let result = self
-                    .read_register(Register::RESULT)
-                    .map_err(nb::Error::Other)?;
-                self.was_conversion_started = false;
-                Ok(Measurement {
-                    result: ((result >> 12) as u8, result & 0xFFF),
-                    status,
-                })
-            } else {
-                Err(nb::Error::WouldBlock)
-            }
+    pub async fn read_raw<P>(
+        &mut self,
+        wait_pin: &mut P,
+    ) -> Result<Measurement<(u8, u16)>, Error<E>>
+    where
+        P: Wait,
+    {
+        let config = self.config.with_high(BitFlags::MODE0);
+        self.write_register(Register::CONFIG, config.bits)?;
+        // Wait for interrupt
+        wait_pin
+            .wait_for_low()
+            .await
+            .expect("failed to await opt3001 interrupt pin");
+
+        let status = self.read_status().unwrap();
+        if status.conversion_ready {
+            let result = self.read_register(Register::RESULT)?;
+            self.was_conversion_started = false;
+            Ok(Measurement {
+                result: ((result >> 12) as u8, result & 0xFFF),
+                status,
+            })
         } else {
-            let config = self.config.with_high(BitFlags::MODE0);
-            self.write_register(Register::CONFIG, config.bits)
-                .map_err(nb::Error::Other)?;
-            self.was_conversion_started = true;
-            Err(nb::Error::WouldBlock)
+            Err(Error::ConversionNotReady)
         }
     }
 }

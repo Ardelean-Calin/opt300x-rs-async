@@ -201,11 +201,16 @@ pub enum Error<E> {
     I2C(E),
     /// Invalid input data provided
     InvalidInputData,
+    /// Conversion not ready
+    ConversionNotReady,
+    /// Unknown error reason
+    Unknown,
 }
 
 /// Error type for mode changes.
 ///
 /// This allows to retrieve the unchanged device in case of an error.
+#[derive(Debug)]
 pub enum ModeChangeError<E, DEV> {
     /// I²C bus error while changing mode.
     ///
